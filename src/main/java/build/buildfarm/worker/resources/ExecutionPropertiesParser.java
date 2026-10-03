@@ -70,6 +70,9 @@ public class ExecutionPropertiesParser {
     parser.put(
         ExecutionProperties.PERSISTENT_WORKER_KEY,
         ExecutionPropertiesParser::storePersistentWorkerKey);
+    parser.put(
+        ExecutionProperties.PERSISTENT_WORKER_CANCELLABLE,
+        ExecutionPropertiesParser::storePersistentWorkerCancellable);
     // todo reconcile with min-cores/max-cores for broker
     parser.put(ExecutionProperties.CPU_SHARE_FLOOR, ExecutionPropertiesParser::storeCpuShareFloor);
     parser.put(ExecutionProperties.PCT_MIN_UNUSED, ExecutionPropertiesParser::storePctMinUnused);
@@ -354,6 +357,18 @@ public class ExecutionPropertiesParser {
     ArrayList<String> xs = new ArrayList<>();
     xs.add("Hash of tool inputs for remote persistent workers");
     describeChange(xs, "persistentWorkerKey(hash of tool inputs)", property.getValue(), property);
+  }
+
+  /**
+   * @brief Stores persistentWorkerCancellable
+   * @details Parses and stores a boolean.
+   * @param limits Current limits to apply changes to.
+   * @param property The property to store.
+   */
+  private static void storePersistentWorkerCancellable(ResourceLimits limits, Property property) {
+    limits.persistentWorkerCancellable = Boolean.parseBoolean(property.getValue());
+    describeChange(
+        limits.description, "persistent worker supports cancellation", property.getValue(), property);
   }
 
   private static void storeCpuShareFloor(ResourceLimits limits, Property property) {

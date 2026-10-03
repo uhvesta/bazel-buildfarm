@@ -32,6 +32,49 @@ import org.junit.runners.JUnit4;
  */
 @RunWith(JUnit4.class)
 public class ResourceDeciderTest {
+  private static ResourceLimits decideWithProperty(String name, String value) throws Exception {
+    Command command =
+        Command.newBuilder()
+            .setPlatform(
+                Platform.newBuilder()
+                    .addProperties(Platform.Property.newBuilder().setName(name).setValue(value)))
+            .build();
+    return ResourceDecider.decideResourceLimitations(
+        command,
+        /* defaultMaxCores= */ 0,
+        /* onlyMulticoreTests= */ false,
+        /* limitGlobalExecution= */ false,
+        /* executeStageWidth= */ 100,
+        /* allowBringYourOwnContainer= */ false,
+        new SandboxSettings());
+  }
+
+  // Function under test: decideResourceLimitations
+  // Reason for testing: persistent workers are not assumed to support cancellation
+  // Failure explanation: workers would be sent cancel requests they do not understand
+  @Test
+  public void persistentWorkerIsNotCancellableByDefault() throws Exception {
+    ResourceLimits limits = decideWithProperty(ExecutionProperties.PERSISTENT_WORKER_KEY, "key");
+
+    assertThat(limits.persistentWorkerKey).isEqualTo("key");
+    assertThat(limits.persistentWorkerCancellable).isFalse();
+  }
+
+  // Function under test: decideResourceLimitations
+  // Reason for testing: clients can declare their persistent worker cancellable
+  // Failure explanation: the exec_property was not applied
+  @Test
+  public void persistentWorkerCancellableCanBeSet() throws Exception {
+    assertThat(
+            decideWithProperty(ExecutionProperties.PERSISTENT_WORKER_CANCELLABLE, "true")
+                .persistentWorkerCancellable)
+        .isTrue();
+    assertThat(
+            decideWithProperty(ExecutionProperties.PERSISTENT_WORKER_CANCELLABLE, "false")
+                .persistentWorkerCancellable)
+        .isFalse();
+  }
+
   // Function under test: decideResourceLimitations
   // Reason for testing: test that cores can be set
   // Failure explanation: cores were not decided as expected

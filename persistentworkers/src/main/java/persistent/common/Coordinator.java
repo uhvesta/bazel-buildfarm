@@ -43,16 +43,43 @@ public abstract class Coordinator<
     this.workerPool = workerPool;
   }
 
+  /**
+   * Runs a request on a worker obtained from the pool.
+   *
+   * <p>The worker is always returned to the pool, whether the request completes, fails, or the
+   * calling thread is interrupted. Workers which are no longer usable are expected to fail pool
+   * validation on return and get discarded, so a failed or cancelled request cannot leak a pool
+   * slot.
+   */
   public CO runRequest(K workerKey, CI reqWithCtx) throws Exception {
     W worker = workerPool.obtain(workerKey);
-
-    I request = preWorkInit(workerKey, reqWithCtx, worker);
-    O workResponse = worker.doWork(request);
-    CO responseAfterCLeanup = postWorkCleanup(workResponse, worker, reqWithCtx);
-
-    workerPool.release(workerKey, worker);
-    return responseAfterCLeanup;
+    try {
+      I request = preWorkInit(workerKey, reqWithCtx, worker);
+      O workResponse = doWork(worker, request, reqWithCtx);
+      return postWorkCleanup(workResponse, worker, reqWithCtx);
+    } catch (Throwable t) {
+      try {
+        abortWork(worker, reqWithCtx);
+      } catch (Throwable abortFailure) {
+        t.addSuppressed(abortFailure);
+      }
+      throw t;
+    } finally {
+      workerPool.release(workerKey, worker);
+    }
   }
+
+  /** Hook for passing per-request context (e.g. a deadline) through to the worker. */
+  protected O doWork(W worker, I request, CI reqWithCtx) throws Exception {
+    return worker.doWork(request);
+  }
+
+  /**
+   * Called when a request did not complete normally (an exception, or an interrupt) and before the
+   * worker is returned to the pool. Implementations should undo what {@link #preWorkInit} did to
+   * the worker's environment so the next request does not observe it.
+   */
+  protected void abortWork(W worker, CI request) throws IOException {}
 
   public abstract I preWorkInit(K workerKey, CI request, W worker) throws IOException;
 

@@ -8,6 +8,7 @@ java_library(
     deps = [
         "//persistentworkers/src/main/java/persistent/bazel:bazel-persistent-workers",
         "//persistentworkers/src/main/java/persistent/common:persistent-common",
+        "//persistentworkers/src/main/protobuf:worker_protocol_java_proto",
         "@buildfarm_maven//:com_google_guava_guava",
     ],
 )
@@ -15,6 +16,13 @@ java_library(
 java_binary(
     name = "adder-bin",
     main_class = "adder.Adder",
+    visibility = ["//visibility:public"],
+    runtime_deps = [":adder-lib"],
+)
+
+java_binary(
+    name = "sleeper-bin",
+    main_class = "sleeper.Sleeper",
     visibility = ["//visibility:public"],
     runtime_deps = [":adder-lib"],
 )

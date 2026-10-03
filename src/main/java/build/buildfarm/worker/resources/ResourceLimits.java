@@ -165,6 +165,14 @@ public class ResourceLimits {
   public String persistentWorkerKey = "";
 
   /**
+   * @field persistentWorkerCancellable
+   * @brief Whether the action's persistent worker supports cancel requests.
+   * @details Declared by the client with the persistentWorkerCancellable exec_property. The worker
+   *     configuration can also declare it by mnemonic.
+   */
+  public boolean persistentWorkerCancellable = false;
+
+  /**
    * @field cpuShareFloor
    * @brief minimum number of cpu shares an execution must own, there are 1000 shares per cpu
    * @details Prevent available cpu from being reduced beyond this amount Must not be <= 0 for

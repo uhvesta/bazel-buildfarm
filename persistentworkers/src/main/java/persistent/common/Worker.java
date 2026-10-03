@@ -15,7 +15,14 @@
 package persistent.common;
 
 public interface Worker<I, O> extends Destructable {
-  O doWork(I request);
+  /**
+   * Performs the work for a request, blocking until it completes.
+   *
+   * <p>If the calling thread is interrupted while the work is in flight, the worker must bring
+   * itself back to a state where it is either safe to reuse or has been destroyed, and then
+   * propagate the {@link InterruptedException}.
+   */
+  O doWork(I request) throws InterruptedException;
 
   default void destroy() {}
 }

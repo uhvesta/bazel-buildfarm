@@ -30,6 +30,7 @@ import java.nio.file.Path;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.TimeUnit;
 import java.util.logging.Level;
 import lombok.Getter;
 import lombok.extern.java.Log;
@@ -43,6 +44,8 @@ import lombok.extern.java.Log;
  */
 @Log
 public class ProcessWrapper implements Closeable {
+  private static final long DESTROY_WAIT_SECONDS = 5;
+
   private final Process process;
 
   @Getter private final Path workRoot;
@@ -133,8 +136,19 @@ public class ProcessWrapper implements Closeable {
     return this.process.waitFor();
   }
 
+  /**
+   * Kills the process and waits briefly for it to be reaped, so that {@link #isAlive()} reflects
+   * the kill. Pool validation relies on that when a worker is returned right after being killed.
+   */
   public void destroy() {
     this.process.destroyForcibly();
+    try {
+      if (!this.process.waitFor(DESTROY_WAIT_SECONDS, TimeUnit.SECONDS)) {
+        log.log(Level.WARNING, "Process did not exit after destroyForcibly: " + this.args);
+      }
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+    }
   }
 
   @Override

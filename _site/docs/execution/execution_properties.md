@@ -132,6 +132,12 @@ PASS
 ### `debug-after-execution`
 **description:** Runs the execution, but fails it afterward with important debug information on how the execution was performed.
 
+## Persistent Workers:
+
+### `persistentWorkerCancellable`
+**description:** Declares that the persistent worker running this action implements the cancel request of the worker protocol.
+**use case:** When an operation is cancelled, or the action times out, the worker is sent a cancel request and keeps running if it acknowledges within a grace period. Without this property (or the `persistentWorkerCancellableMnemonics` worker configuration naming the action's mnemonic) the worker is killed instead, and the next action pays for starting a new one. Only declare this for tools that actually handle cancel requests.
+
 ## Execution Flow:
 
 This is a special set of action mnemonics (*not* Platform properties) that can be used to test the flow of actions through the execution segments (prequeue/queue).

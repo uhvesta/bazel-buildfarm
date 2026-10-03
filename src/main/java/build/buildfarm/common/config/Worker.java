@@ -65,6 +65,7 @@ public class Worker {
   private int zstdBufferPoolBorrowTimeoutMillis = -1; /* negative waits without a bound */
   private boolean compressedBlobTransfer = false;
   private Set<String> persistentWorkerActionMnemonicAllowlist = Set.of("*");
+  private Set<String> persistentWorkerCancellableMnemonics = Set.of();
   private Set<String> ignoreMarketExecutionMnemonics = Set.of("TestRunner");
   // These limited resources are only for the individual worker.
   // An example would be hardware resources such as GPUs.

@@ -22,10 +22,10 @@ import com.google.protobuf.util.Durations;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.Timer;
-import java.util.TimerTask;
+import java.time.Duration;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeoutException;
 import java.util.logging.Level;
 import lombok.extern.java.Log;
 import persistent.bazel.client.CommonsWorkerPool;
@@ -47,13 +47,6 @@ import persistent.bazel.client.WorkerSupervisor;
 public class ProtoCoordinator extends WorkCoordinator<RequestCtx, ResponseCtx, CommonsWorkerPool> {
   private static final String WORKER_INIT_LOG_SUFFIX = ".initargs.log";
 
-  private record PendingRequest(PersistentWorker worker, RequestTimeoutHandler task) {}
-
-  private static final ConcurrentHashMap<RequestCtx, PendingRequest> pendingReqs =
-      new ConcurrentHashMap<>();
-
-  private final Timer timeoutScheduler = new Timer("persistent-worker-timeout", true);
-
   // Synchronize writes to the tool input directory per WorkerKey
   // TODO: We only need a Set of WorkerKeys to synchronize on, but no ConcurrentHashSet
   private static final ConcurrentHashMap<WorkerKey, WorkerKey> toolInputSyncs =
@@ -66,16 +59,6 @@ public class ProtoCoordinator extends WorkCoordinator<RequestCtx, ResponseCtx, C
 
   public ProtoCoordinator(CommonsWorkerPool workerPool) {
     super(workerPool);
-
-    timeoutScheduler.scheduleAtFixedRate(
-        new TimerTask() {
-          @Override
-          public void run() {
-            timeoutScheduler.purge();
-          }
-        },
-        10000,
-        10000);
   }
 
   private ProtoCoordinator(WorkerSupervisor supervisor, int maxWorkersPerKey) {
@@ -159,19 +142,6 @@ public class ProtoCoordinator extends WorkCoordinator<RequestCtx, ResponseCtx, C
   public WorkRequest preWorkInit(WorkerKey key, RequestCtx request, PersistentWorker worker)
       throws IOException {
     checkNotNull(request.timeout);
-    PendingRequest pendingRequest = new PendingRequest(worker, new RequestTimeoutHandler(request));
-    PendingRequest alreadyPendingRequest = pendingReqs.putIfAbsent(request, pendingRequest);
-    // null means that this request was not in pendingReqs (the expected case)
-    if (alreadyPendingRequest != null) {
-      if (alreadyPendingRequest.worker != worker) {
-        throw new IllegalArgumentException(
-            "Already have a persistent worker on the job: " + request.request);
-      } else {
-        throw new IllegalArgumentException(
-            "Got the same request for the same worker while it's running: " + request.request);
-      }
-    }
-    timeoutScheduler.schedule(pendingRequest.task, Durations.toMillis(request.timeout));
 
     // Symlinking should hypothetically be faster+leaner than copying inputs, but it's buggy.
     copyNontoolInputs(request.workerInputs, worker.getExecRoot());
@@ -179,31 +149,61 @@ public class ProtoCoordinator extends WorkCoordinator<RequestCtx, ResponseCtx, C
     return request.request;
   }
 
+  /**
+   * The request's timeout bounds the time the worker takes to respond. The worker enforces it
+   * itself, in this thread, so that a timed out request is cancelled or killed in exactly the same
+   * way as an interrupted one.
+   *
+   * @throws TimeoutException if the worker did not respond in time
+   * @throws InterruptedException if the request was cancelled
+   */
+  @Override
+  protected WorkResponse doWork(PersistentWorker worker, WorkRequest request, RequestCtx ctx)
+      throws TimeoutException, InterruptedException {
+    Duration timeout = Duration.ofNanos(Durations.toNanos(ctx.timeout));
+    WorkResponse response = worker.doWork(request, timeout);
+    if (response != null && response.getWasCancelled()) {
+      throw new TimeoutException("Persistent worker did not respond within " + timeout);
+    }
+    return response;
+  }
+
   // After the worker has finished, output files need to be visible in the operation directory
   @Override
   public ResponseCtx postWorkCleanup(
       WorkResponse response, PersistentWorker worker, RequestCtx request) throws IOException {
-    PendingRequest pendingRequest = pendingReqs.remove(request);
-
-    if (pendingRequest != null) {
-      pendingRequest.task.cancel();
-    }
-
     if (response == null) {
       throw new RuntimeException("postWorkCleanup: WorkResponse was null!");
     }
 
-    if (response.getExitCode() == 0) {
-      try {
-        Path workerExecRoot = worker.getExecRoot();
+    try {
+      Path workerExecRoot = worker.getExecRoot();
+      if (response.getExitCode() == 0) {
         moveOutputsToOperationRoot(request.filesContext, workerExecRoot);
-        cleanUpNontoolInputs(request.workerInputs, workerExecRoot);
-      } catch (IOException e) {
-        throw logBadCleanup(request, e);
+      } else {
+        deleteOutputs(request.filesContext, workerExecRoot);
       }
+      cleanUpNontoolInputs(request.workerInputs, workerExecRoot);
+    } catch (IOException e) {
+      throw logBadCleanup(request, e);
     }
 
     return new ResponseCtx(response, worker.flushStdErr());
+  }
+
+  /**
+   * A request that was cancelled, timed out or failed outright must not leave its inputs and
+   * partial outputs behind in the worker's directory, since the worker goes back to the pool and
+   * serves the next request from the same directory.
+   */
+  @Override
+  protected void abortWork(PersistentWorker worker, RequestCtx request) throws IOException {
+    Path workerExecRoot = worker.getExecRoot();
+    try {
+      deleteOutputs(request.filesContext, workerExecRoot);
+    } finally {
+      cleanUpNontoolInputs(request.workerInputs, workerExecRoot);
+    }
   }
 
   private IOException logBadCleanup(RequestCtx request, IOException e) {
@@ -221,7 +221,7 @@ public class ProtoCoordinator extends WorkCoordinator<RequestCtx, ResponseCtx, C
 
     log.log(Level.SEVERE, sb.toString(), e);
 
-    return new IOException("Response was OK but failed on postWorkCleanup", e);
+    return new IOException("Failed on postWorkCleanup", e);
   }
 
   private void copyNontoolInputs(WorkerInputs workerInputs, Path workerExecRoot)
@@ -256,41 +256,18 @@ public class ProtoCoordinator extends WorkCoordinator<RequestCtx, ResponseCtx, C
     }
   }
 
+  // Outputs which won't be used must not be left for the worker's next request to trip over
+  private void deleteOutputs(WorkFilesContext context, Path workerExecRoot) throws IOException {
+    for (String relOutput : context.outputFiles) {
+      FileAccessUtils.deleteFileIfExists(workerExecRoot.resolve(relOutput));
+    }
+  }
+
   private void cleanUpNontoolInputs(WorkerInputs workerInputs, Path workerExecRoot)
       throws IOException {
     for (Path opPath : workerInputs.allInputs.keySet()) {
       if (!workerInputs.allToolInputs.contains(opPath)) {
         workerInputs.deleteInputFileIfExists(workerExecRoot, opPath);
-      }
-    }
-  }
-
-  private final class RequestTimeoutHandler extends TimerTask {
-    private final RequestCtx request;
-
-    private RequestTimeoutHandler(RequestCtx request) {
-      this.request = request;
-    }
-
-    @Override
-    public void run() {
-      onTimeout(this.request, pendingReqs.get(this.request).worker);
-    }
-  }
-
-  private void onTimeout(RequestCtx request, PersistentWorker worker) {
-    if (worker != null) {
-      log.severe("Persistent Worker timed out on request: " + request.request);
-      try {
-        this.workerPool.invalidateObject(worker.getKey(), worker);
-      } catch (Exception e) {
-        log.severe(
-            "Tried to invalidate worker for request:\n"
-                + request
-                + "\n\tbut got: "
-                + e
-                + "\n\nCalling worker.destroy() and moving on.");
-        worker.destroy();
       }
     }
   }

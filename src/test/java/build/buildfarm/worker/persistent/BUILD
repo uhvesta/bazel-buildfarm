@@ -4,11 +4,15 @@ java_test(
     name = "tests",
     size = "small",
     srcs = glob(["*.java"]),
+    resources = [
+        "//persistentworkers/examples/src/main/java:sleeper-bin_deploy.jar",
+    ],
     test_class = "build.buildfarm.AllTests",
     deps = [
         "//persistentworkers/src/main/java/persistent/bazel:bazel-persistent-workers",
         "//persistentworkers/src/main/java/persistent/common:persistent-common",
         "//persistentworkers/src/main/protobuf:worker_protocol_java_proto",
+        "//persistentworkers/src/test/java/persistent/testutil",
         "//src/main/java/build/buildfarm/common",
         "//src/main/java/build/buildfarm/common/config",
         "//src/main/java/build/buildfarm/worker/persistent",
@@ -22,6 +26,7 @@ java_test(
         "@buildfarm_maven//:com_google_guava_guava",
         "@buildfarm_maven//:com_google_jimfs_jimfs",
         "@buildfarm_maven//:com_google_protobuf_protobuf_java",
+        "@buildfarm_maven//:com_google_protobuf_protobuf_java_util",
         "@buildfarm_maven//:com_google_truth_truth",
         "@buildfarm_maven//:io_grpc_grpc_api",
         "@buildfarm_maven//:io_grpc_grpc_context",

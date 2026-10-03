@@ -21,6 +21,7 @@ import com.google.devtools.build.lib.worker.WorkerProtocol.WorkResponse;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Duration;
 import java.util.Optional;
 import java.util.Set;
 import java.util.logging.Level;
@@ -45,13 +46,27 @@ public class PersistentWorker implements Worker<WorkRequest, WorkResponse> {
 
   private static final Logger logger = Logger.getLogger(PersistentWorker.class.getName());
 
+  /** How long a cancellable worker gets to acknowledge a cancel request. */
+  public static final Duration DEFAULT_CANCEL_GRACE_PERIOD = Duration.ofSeconds(5);
+
   @Getter private final WorkerKey key;
+  private final Duration cancelGracePeriod;
   @Getter private final ImmutableList<String> initCmd;
   @Getter private final Path execRoot;
   private final ProtoWorkerRW workerRW;
 
   public PersistentWorker(WorkerKey key, String workerDir) throws IOException {
+    this(key, workerDir, DEFAULT_CANCEL_GRACE_PERIOD);
+  }
+
+  /**
+   * @param cancelGracePeriod how long to wait for a worker to acknowledge a cancel request before
+   *     giving up and killing it. Only relevant if the key is cancellable.
+   */
+  public PersistentWorker(WorkerKey key, String workerDir, Duration cancelGracePeriod)
+      throws IOException {
     this.key = key;
+    this.cancelGracePeriod = cancelGracePeriod;
     this.execRoot = key.getExecRoot().resolve(workerDir);
     this.initCmd =
         ImmutableList.<String>builder().addAll(key.getCmd()).addAll(key.getArgs()).build();
@@ -78,15 +93,43 @@ public class PersistentWorker implements Worker<WorkRequest, WorkResponse> {
   }
 
   @Override
-  public WorkResponse doWork(WorkRequest request) {
+  public WorkResponse doWork(WorkRequest request) throws InterruptedException {
+    return doWork(request, null);
+  }
+
+  /**
+   * Sends a request to the worker and waits for its response.
+   *
+   * <p>If the calling thread is interrupted, or {@code timeout} elapses first, the in-flight
+   * request is cancelled: a cancellable worker is asked to abandon it and keeps running if it
+   * acknowledges within the grace period, any other worker is killed. Either way this worker is
+   * safe to hand back to the pool afterwards, because no stale response is left in its pipe.
+   *
+   * @param timeout how long to wait for the response, or null to wait indefinitely.
+   * @return the response; a response with {@code was_cancelled} set if {@code timeout} elapsed;
+   *     null if the worker died or the protocol failed.
+   * @throws InterruptedException if the thread was interrupted; the request has been cancelled.
+   */
+  public WorkResponse doWork(WorkRequest request, Duration timeout) throws InterruptedException {
     WorkResponse response = null;
     try {
       logRequest(request);
 
       workerRW.write(request);
-      response = workerRW.waitAndRead();
+      response = timeout == null ? workerRW.waitAndRead() : workerRW.waitAndRead(timeout);
+      if (response == null) {
+        logger.log(Level.WARNING, "Worker timed out after " + timeout + ": " + initCmd);
+        cancelInFlight(request);
+        return WorkResponse.newBuilder()
+            .setRequestId(request.getRequestId())
+            .setWasCancelled(true)
+            .build();
+      }
 
       logIfBadResponse(response);
+    } catch (InterruptedException e) {
+      cancelInFlight(request);
+      throw e;
     } catch (IOException e) {
       e.printStackTrace();
       logger.severe("IO Failing with : " + e.getMessage());
@@ -95,6 +138,46 @@ public class PersistentWorker implements Worker<WorkRequest, WorkResponse> {
       logger.severe("Failing with : " + e.getMessage());
     }
     return response;
+  }
+
+  /**
+   * Abandons the in-flight request so this worker can be reused, or kills it if that isn't
+   * possible.
+   */
+  private void cancelInFlight(WorkRequest request) {
+    if (key.isCancellable() && requestCancel(request)) {
+      return;
+    }
+    destroy();
+  }
+
+  /**
+   * Sends a cancel request and waits for the worker to answer the original request, which it does
+   * either with {@code was_cancelled} or with a regular response if it had already finished. That
+   * response must be consumed so the pipe stays in sync with the next request.
+   *
+   * @return true if the worker acknowledged and is ready for new work.
+   */
+  private boolean requestCancel(WorkRequest request) {
+    try {
+      workerRW.write(
+          WorkRequest.newBuilder().setRequestId(request.getRequestId()).setCancel(true).build());
+      if (workerRW.waitAndRead(cancelGracePeriod) == null) {
+        logger.log(
+            Level.WARNING,
+            "Worker did not acknowledge cancel within " + cancelGracePeriod + ": " + initCmd);
+        return false;
+      }
+      // anything the cancelled request wrote to stderr is not meant for the next one
+      flushStdErr();
+      return true;
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+      return false;
+    } catch (IOException e) {
+      logger.log(Level.WARNING, "Failed to cancel request: " + e.getMessage());
+      return false;
+    }
   }
 
   public Optional<Integer> getExitValue() {

@@ -594,6 +594,10 @@ public class Executor {
           limits,
           timeout,
           PersistentExecutor.defaultWorkRootsDir,
+          PersistentExecutor.isCancellable(
+              limits,
+              executionContext.metadata.getRequestMetadata().getActionMnemonic(),
+              BuildfarmConfigs.getInstance().getWorker().getPersistentWorkerCancellableMnemonics()),
           resultBuilder);
     }
 

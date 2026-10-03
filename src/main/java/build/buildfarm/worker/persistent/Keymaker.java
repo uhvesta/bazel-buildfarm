@@ -36,11 +36,9 @@ public class Keymaker {
       ImmutableList<String> workerInitArgs,
       ImmutableMap<String, String> workerEnv,
       String executionName,
-      WorkerInputs workerFiles) {
-    // Cancellation not yet supported; can change in the future,
-    //  Presumably, following how Bazel's own persistent workers work
+      WorkerInputs workerFiles,
+      boolean cancellable) {
     boolean sandboxed = true;
-    boolean cancellable = false;
 
     Path workRoot =
         calculateWorkRoot(

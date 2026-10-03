@@ -34,7 +34,7 @@ import persistent.testutil.WorkerUtils;
 @RunWith(JUnit4.class)
 public class PersistentWorkerTest {
   static WorkResponse sendAddRequest(PersistentWorker worker, Path stdErrLog, int x, int y)
-      throws IOException {
+      throws IOException, InterruptedException {
     ImmutableList<String> arguments = ImmutableList.of(String.valueOf(x), String.valueOf(y));
 
     WorkRequest request =

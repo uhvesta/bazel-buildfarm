@@ -21,6 +21,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.util.function.Supplier;
 import lombok.Getter;
 import org.apache.commons.io.IOUtils;
@@ -57,8 +58,23 @@ public class ProtoWorkerRW {
   }
 
   public WorkResponse waitAndRead() throws IOException, InterruptedException {
+    return waitAndRead(Long.MAX_VALUE);
+  }
+
+  /**
+   * Waits up to {@code timeout} for the worker to respond.
+   *
+   * @return the response, or null if the worker did not respond within the timeout.
+   */
+  public WorkResponse waitAndRead(Duration timeout) throws IOException, InterruptedException {
+    return waitAndRead(timeout.toNanos());
+  }
+
+  private WorkResponse waitAndRead(long timeoutNanos) throws IOException, InterruptedException {
     try {
-      waitForInput(processWrapper::isAlive, readStream);
+      if (!awaitInput(processWrapper::isAlive, readStream, timeoutNanos)) {
+        return null;
+      }
     } catch (IOException e) {
       String stdErrMsg = processWrapper.getErrorString();
       String stdOut = "";
@@ -96,14 +112,28 @@ public class ProtoWorkerRW {
 
   public static void waitForInput(Supplier<Boolean> liveCheck, InputStream inputStream)
       throws IOException, InterruptedException {
+    awaitInput(liveCheck, inputStream, Long.MAX_VALUE);
+  }
+
+  /**
+   * @return true once input is available, false if {@code timeoutNanos} elapsed first.
+   */
+  private static boolean awaitInput(
+      Supplier<Boolean> liveCheck, InputStream inputStream, long timeoutNanos)
+      throws IOException, InterruptedException {
     String workerDeathMsg = "Worker process for died while waiting for response";
+    long start = System.nanoTime();
     // TODO can we do better than spinning? i.e. condition variable?
     while (inputAvailable(inputStream, workerDeathMsg) == 0) {
+      if (System.nanoTime() - start >= timeoutNanos) {
+        return false;
+      }
       Thread.sleep(10);
       if (!liveCheck.get()) {
         throw new IOException(workerDeathMsg + "\n");
       }
     }
+    return true;
   }
 
   private static int inputAvailable(InputStream inputStream, String errorMsg) throws IOException {

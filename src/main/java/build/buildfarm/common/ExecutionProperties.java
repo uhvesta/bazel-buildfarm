@@ -292,6 +292,17 @@ public class ExecutionProperties {
   public static final String PERSISTENT_WORKER_KEY = "persistentWorkerKey";
 
   /**
+   * @field PERSISTENT_WORKER_CANCELLABLE
+   * @brief Declares that the persistent worker for this action supports cancel requests.
+   * @details When true, a cancelled or timed out request is abandoned by sending the worker a
+   *     cancel request, which keeps the worker alive for reuse. Otherwise the worker is killed.
+   *     Set this only for tools which implement the cancellation part of the worker protocol.
+   *     Workers can also be declared cancellable per mnemonic with the worker configuration
+   *     persistentWorkerCancellableMnemonics.
+   */
+  public static final String PERSISTENT_WORKER_CANCELLABLE = "persistentWorkerCancellable";
+
+  /**
    * @field PERSISTENT_WORKER_COMMAND
    * @brief Command string to start the persistent worker
    * @details See https://github.com/bazelbuild/bazel/issues/10091

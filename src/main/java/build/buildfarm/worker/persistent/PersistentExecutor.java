@@ -33,6 +33,8 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.TimeoutException;
 import java.util.logging.Level;
 import lombok.extern.java.Log;
 import persistent.bazel.client.WorkerKey;
@@ -93,10 +95,16 @@ public class PersistentExecutor {
    * @param argsList
    * @param envVars
    * @param limits
-   * @param timeout
+   * @param timeout how long the worker may take to respond; {@link Code#DEADLINE_EXCEEDED} if it
+   *     takes longer
    * @param workRootsDir
+   * @param cancellable whether the worker supports cancel requests. If so, a cancelled or timed
+   *     out request is abandoned with a cancel request and the worker stays available. Otherwise
+   *     the worker is killed.
    * @param resultBuilder
    * @return
+   * @throws InterruptedException if the calling thread was interrupted, i.e. the operation was
+   *     cancelled. The in-flight request has been cancelled by then.
    */
   public static Code runOnPersistentWorker(
       WorkFilesContext context,
@@ -106,8 +114,9 @@ public class PersistentExecutor {
       ResourceLimits limits,
       Duration timeout,
       Path workRootsDir,
+      boolean cancellable,
       ActionResult.Builder resultBuilder)
-      throws IOException {
+      throws IOException, InterruptedException {
     // Pull out persistent worker start command from the overall action request
 
     log.log(Level.FINE, "executeCommandOnPersistentWorker[" + operationName + "]");
@@ -155,7 +164,8 @@ public class PersistentExecutor {
             workerInitArgs,
             env,
             executionName,
-            workerFiles);
+            workerFiles,
+            cancellable);
 
     coordinator.copyToolInputsIntoWorkerToolRoot(key, workerFiles);
 
@@ -195,6 +205,13 @@ public class PersistentExecutor {
 
       response = fullResponse.response;
       stdErr = fullResponse.errorString;
+    } catch (InterruptedException e) {
+      // the operation was cancelled; the worker was already cancelled or killed
+      throw e;
+    } catch (TimeoutException e) {
+      log.log(Level.WARNING, "Persistent worker request timed out: " + operationName, e);
+      resultBuilder.setStderrRaw(ByteString.copyFromUtf8(e.getMessage()));
+      return Code.DEADLINE_EXCEEDED;
     } catch (Exception e) {
       String debug =
           "\n\tRequest.initCmd: "
@@ -225,6 +242,17 @@ public class PersistentExecutor {
         .setStdoutRaw(response.getOutputBytes())
         .setStderrRaw(ByteString.copyFrom(stdErr, StandardCharsets.UTF_8));
     return Code.OK;
+  }
+
+  /**
+   * Decide if the persistent worker for an action supports cancel requests, in which case it is
+   * cancelled gracefully and reused instead of being killed. The client can declare it for its own
+   * tools with the persistentWorkerCancellable exec_property, and the worker configuration can
+   * declare it by mnemonic for tools whose rules cannot be changed.
+   */
+  public static boolean isCancellable(
+      ResourceLimits limits, String actionMnemonic, Set<String> cancellableMnemonics) {
+    return limits.persistentWorkerCancellable || cancellableMnemonics.contains(actionMnemonic);
   }
 
   private static ImmutableList<String> parseInitCmd(String cmdStr, ImmutableList<String> argsList) {
